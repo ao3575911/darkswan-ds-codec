@@ -65,6 +65,10 @@ Worked example: `"OK\n"` (`0x4f 0x4b 0x0a`):
 - `0x0a` → hi `0` (`"\t"`), lo `10` (`"          \t"` = ten spaces), emits `"\t          \t"`.
 - Append record newline: resulting record is `"    \t               \t    \t           \t\t          \t\n"`.
 
+
+<img width="865" height="454" alt="image" src="https://github.com/user-attachments/assets/95e99948-33ed-4a8f-835a-fab1de6ae46d" />
+
+
 Tips:
 - Counting helps: write the space counts next to each nibble while you type to avoid slipping past 15.
 - After hand-building a record, `ds-codec decode - -` can validate your work by reading from stdin and surfacing `DecodeError` messages if something is off.
