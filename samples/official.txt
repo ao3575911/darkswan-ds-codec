@@ -1,0 +1,3 @@
+DarkSwan official sample file.
+Integrity check across lines.
+End.

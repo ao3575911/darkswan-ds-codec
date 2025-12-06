@@ -1,0 +1,13 @@
+DARKSWAN-DS2
+    	    	      	 	       	  	      	           	     	   	       	       	      	 	      	              	  		      	               	      	      	      	      	      	         	      	   	      	         	      	 	      	            	  		       	   	      	 	      	             	       		      	            	      	     	  		      	      	      	         	      	            	      	     	  	              		          	
+    	         	      	              	       	    	      	     	      	       	       	  	      	         	       	    	       	         	  		      	   	      	        	      	     	      	   	      	           	  		      	 	      	   	       	  	      	               	       	   	       	   	  		      	            	      	         	      	              	      	     	       	   	  	              		          	
+    	     	      	              	      	    	  	              		          	
+##META
+format-version: 2
+brand: DarkSwan(tm)
+tool: ds-codec/0.3.0
+hash: sha256:5aad55975bf2b811f3bc17e0509c375233bd1c9a3f327c9448547ef09a2fd8e2
+source-bytes: 66
+source-lines: 3
+encoded-records: 3
+##ENDMETA

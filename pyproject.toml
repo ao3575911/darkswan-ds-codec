@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "darkswan-ds"
+version = "0.3.0"
+description = "DarkSwan(tm) whitespace-based .ds encoder/decoder with checksum metadata and inspector"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "DarkSwan" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.scripts]
+ds-codec = "ds_codec:cli_main"
+
+[tool.setuptools]
+py-modules = ["ds_codec"]
