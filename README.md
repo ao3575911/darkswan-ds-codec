@@ -11,6 +11,16 @@
 - Hide payload in text carrier: `ds-codec hide cover.txt secret.bin stego.txt`
 - Reveal payload from stego text: `ds-codec reveal stego.txt recovered.bin`
 - Preflight capacity: `ds-codec capacity cover.txt --secret secret.bin --json`
+- Encrypted hide/reveal: `ds-codec hide cover.txt secret.bin stego.txt --passphrase "<pw>"` then `ds-codec reveal stego.txt recovered.bin --passphrase "<pw>"`
+- Profiled embedding: `--profile balanced|low-noise|high-capacity`
+- Deterministic reproducibility: `--deterministic --seed <value>`
+- Carrier risk analysis: `ds-codec analyze-carrier cover.txt --json`
+- Signed manifest output: add `--manifest-out op-manifest.json --manifest-key "<key>"` to `hide|reveal|capacity|analyze-carrier`
+- Manifest verification: `ds-codec verify-manifest op-manifest.json --manifest-key "<key>" --json`
+- Survivability harness: `ds-codec evaluate-survivability cover.txt secret.bin --json`
+- Policy guardrails: add `--policy policy.json --ack-authorized-use --engagement ENG-123 --classification internal` to stego operations
+- Split payload into threshold shards: `ds-codec split-payload secret.bin shards/out --total-shards 5 --threshold 3 --json`
+- Reconstruct from shards: `ds-codec reconstruct-payload recovered.bin shards/out.part-01.dsshard shards/out.part-02.dsshard shards/out.part-03.dsshard --json`
 - Stream: use `-` for stdin/stdout on encode/decode (e.g., `cat plain.txt | ds-codec encode - - > archive.ds`).
 - Legacy: `ds-codec encode --format ds1 plain.txt legacy.ds` for header-only output without metadata.
 
@@ -111,8 +121,15 @@ Tips:
 - `iter_records(in_fp) -> Iterator[bytes]`: iterate decoded records from a DS stream from current position.
 - `count_records(in_fp) -> int`: count DS records from current position without materializing full decoded payload.
 - `estimate_capacity(cover: bytes, chunk_size=64) -> int`: estimate max payload bytes for a given carrier and chunk size.
-- `embed_payload(cover: bytes, payload: bytes, chunk_size=64) -> bytes`: hide payload bytes in carrier text line endings.
-- `extract_payload(stego: bytes) -> bytes`: recover hidden payload bytes and verify embedded checksum.
+- `analyze_carrier(cover: bytes) -> dict`: compute carrier transformation risk metrics and score.
+- `evaluate_survivability(cover: bytes, payload: bytes, ...) -> dict`: embed then test extraction after common text transformations.
+- `embed_payload(cover: bytes, payload: bytes, chunk_size=64, profile="balanced", passphrase=None, deterministic=False, seed=None) -> bytes`: hide payload bytes with profile-driven placement and optional encrypted envelope.
+- `extract_payload(stego: bytes, passphrase=None) -> bytes`: recover hidden payload bytes, verify integrity, and decrypt when encrypted mode is used.
+- `generate_operation_manifest(operation: str, details: dict, signing_key=None) -> dict`: create chain-of-custody manifest with optional HMAC signature.
+- `verify_operation_manifest(manifest: dict, signing_key: str) -> bool`: verify signed manifest integrity.
+- `load_policy(path: Optional[str]) -> dict`: load operational guardrail policy for authorization and classification controls.
+- `split_payload(payload: bytes, total_shards: int, threshold: int, ...) -> List[bytes]`: split payload into threshold shards.
+- `reconstruct_payload(shards: List[bytes]) -> bytes`: reconstruct payload from compatible shard subset.
 - `encode_stream(input_fp, output_fp, magic=MAGIC_V2, include_metadata=True) -> dict`: stream line by line, write the header/records/trailer, and return stats.
 - `decode_stream(input_fp, output_fp, verify=True) -> dict`: stream decode, returning `{format, verified, metadata, stats}`; raises `DecodeError` on corruption.
 - `inspect_file(path, verify=True) -> dict`: inspect/verify without materializing output (uses a null sink).
