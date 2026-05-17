@@ -1,6 +1,7 @@
 import io
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -41,6 +42,28 @@ class TestDSCodec(unittest.TestCase):
         decoded = decode_bytes(encoded)
         self.assertEqual(raw, decoded)
 
+    def test_v1_verified_is_false(self) -> None:
+        raw = b"legacy\n"
+        encoded = encode_bytes(raw, magic=MAGIC_V1)
+        buf = io.BytesIO(encoded)
+        out = io.BytesIO()
+        info = decode_stream(buf, out)
+        self.assertFalse(info["verified"])
+
+    def test_v1_silent_corruption(self) -> None:
+        raw = b"integrity\n"
+        encoded = encode_bytes(raw, magic=MAGIC_V1)
+        # Insert an extra space into the first nibble run (hi of 'i'=0x69 is 6 spaces).
+        # This increments hi from 6 to 7, silently changing 'i' to 'y' (0x79).
+        # The nibble pair count stays even so no DecodeError is raised.
+        header_len = len(MAGIC_V1)
+        corrupted = bytes(encoded[:header_len]) + b" " + bytes(encoded[header_len:])
+        buf = io.BytesIO(corrupted)
+        out = io.BytesIO()
+        info = decode_stream(buf, out)
+        self.assertFalse(info["verified"])
+        self.assertNotEqual(raw, out.getvalue())
+
     def test_metadata_mismatch(self) -> None:
         raw = b"abc"
         encoded = encode_bytes(raw, magic=MAGIC_V2)
@@ -55,8 +78,9 @@ class TestDSCodec(unittest.TestCase):
         with self.assertRaises(DecodeError):
             decode_bytes(tampered)
 
-        path = ROOT / "tampered.ds"
-        path.write_bytes(tampered)
+        with tempfile.NamedTemporaryFile(suffix=".ds", delete=False) as f:
+            path = Path(f.name)
+            f.write(tampered)
         self.addCleanup(lambda: path.unlink(missing_ok=True))
         with self.assertRaises(DecodeError):
             inspect_file(path)
@@ -85,8 +109,9 @@ class TestDSCodec(unittest.TestCase):
     def test_inspect_v2(self) -> None:
         raw = b"check\n"
         encoded = encode_bytes(raw, magic=MAGIC_V2)
-        path = ROOT / "tmp.ds"
-        path.write_bytes(encoded)
+        with tempfile.NamedTemporaryFile(suffix=".ds", delete=False) as f:
+            path = Path(f.name)
+            f.write(encoded)
         self.addCleanup(lambda: path.unlink(missing_ok=True))
         report = inspect_file(path)
         self.assertEqual(report["format"], "ds2")
@@ -98,16 +123,18 @@ class TestDSCodec(unittest.TestCase):
     def test_inspect_v1(self) -> None:
         raw = b"legacy\n"
         encoded = encode_bytes(raw, magic=MAGIC_V1)
-        path = ROOT / "tmp1.ds"
-        path.write_bytes(encoded)
+        with tempfile.NamedTemporaryFile(suffix=".ds", delete=False) as f:
+            path = Path(f.name)
+            f.write(encoded)
         self.addCleanup(lambda: path.unlink(missing_ok=True))
         report = inspect_file(path)
         self.assertEqual(report["format"], "ds1")
         self.assertIsNone(report["metadata"])
 
     def test_cli_blocks_overwrite_of_input(self) -> None:
-        tmp = ROOT / "tmp_cli.txt"
-        tmp.write_bytes(b"hi\n")
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            tmp = Path(f.name)
+            f.write(b"hi\n")
         self.addCleanup(lambda: tmp.unlink(missing_ok=True))
 
         argv = ["ds-codec", "encode", str(tmp), str(tmp)]
@@ -160,8 +187,9 @@ class TestDSCodec(unittest.TestCase):
     def test_inspect_json_output(self) -> None:
         raw = b"json check\n"
         encoded = encode_bytes(raw, magic=MAGIC_V2)
-        path = ROOT / "json.ds"
-        path.write_bytes(encoded)
+        with tempfile.NamedTemporaryFile(suffix=".ds", delete=False) as f:
+            path = Path(f.name)
+            f.write(encoded)
         self.addCleanup(lambda: path.unlink(missing_ok=True))
 
         stdout = io.StringIO()

@@ -214,7 +214,7 @@ def _decode_v1(in_fp: BinaryIO, out_fp: BinaryIO) -> Dict[str, object]:
         "encoded_records": encoded_records,
         "sha256": sha.hexdigest(),
     }
-    return {"format": "ds1", "verified": True, "metadata": None, "stats": stats}
+    return {"format": "ds1", "verified": False, "metadata": None, "stats": stats}
 
 
 def _decode_v2(in_fp: BinaryIO, out_fp: BinaryIO, *, verify: bool = True) -> Dict[str, object]:
@@ -317,7 +317,10 @@ def _print_summary(
         f"  format: {format_label}",
     ]
     if verified is not None:
-        lines.append(f"  verified: {'yes' if verified else 'no'}")
+        if format_label == "ds1":
+            lines.append("  verified: n/a (ds1)")
+        else:
+            lines.append(f"  verified: {'yes' if verified else 'no'}")
     lines.extend(
         [
             f"  source-bytes: {stats['source_bytes']}",
