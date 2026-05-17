@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "darkswan-ds"
-version = "0.3.0"
-description = "DarkSwan DS Codec whitespace-based .ds encoder/decoder and line-carried steganography tool"
+version = "0.4.0"
+description = "DarkSwan DS Codec: DS1/DS2 whitespace codec and steganography toolkit with policy controls"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{ name = "DarkSwan" }]

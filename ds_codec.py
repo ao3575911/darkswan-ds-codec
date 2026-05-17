@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Dict, Iterator, List, Optional, Tuple
 
 BRAND = "DarkSwan DS Codec"
-TOOL_VERSION = "0.3.0"
+TOOL_VERSION = "0.4.0"
 MAGIC_V1 = b"DARKSWAN-DS1\n"
 MAGIC_V2 = b"DARKSWAN-DS2\n"
 META_BEGIN = b"##META\n"

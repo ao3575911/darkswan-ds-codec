@@ -1,0 +1,33 @@
+name: Security report
+description: Report a potential security issue (prefer private disclosure)
+title: "[Security]: "
+labels: ["security", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please avoid disclosing exploit details publicly. For sensitive vulnerabilities, use the SECURITY contact in this repo.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the issue and affected area.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Confidentiality, integrity, availability, or misuse implications.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction details
+      description: Include minimum steps, payloads, and versions.
+    validations:
+      required: true

@@ -1,4 +1,6 @@
-# DarkSwan `.ds` file format
+# DarkSwan DS Codec
+
+DS1/DS2 whitespace codec and steganography toolkit with policy controls, manifest verification, and survivability testing.
 
 `darkswan` (file extension `.ds`) is a line-addressable, whitespace container. Every source line is encoded independently, and the bytes are recovered by replaying how a cursor stepped across blank space. The payload lives entirely in how far the cursor moved horizontally (spaces and tabs) and which line it stopped on (newlines).
 
@@ -144,6 +146,16 @@ Tips:
 
 - Samples: `samples/official.txt` (plaintext) and `samples/official.ds` (DS2 with trailer).
 - Tests: `python -m unittest discover -s tests`
+
+## Repository operations
+
+- CI workflow: `.github/workflows/ci.yml`
+- Label sync workflow: `.github/workflows/labels-sync.yml`
+- Issue templates: `.github/ISSUE_TEMPLATE/`
+- Discussion templates: `.github/DISCUSSION_TEMPLATE/`
+- PR template: `.github/PULL_REQUEST_TEMPLATE.md`
+- Repo profile and metadata guide: `docs/REPOSITORY_PROFILE.md`
+- Version tracking: `pyproject.toml`, `ds_codec.py` (`TOOL_VERSION`), `VERSION`, and `CHANGELOG.md`
 
 ## Design notes
 

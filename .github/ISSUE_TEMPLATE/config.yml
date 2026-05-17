@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/ao3575911/darkswan-ds-codec/discussions
+    about: Please use Discussions for Q&A and non-bug brainstorming.
+  - name: Security disclosure
+    url: mailto:security@darkswan-ds.local
+    about: Use private email for sensitive vulnerability details.

@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a reproducible defect in codec, stego, or CLI behavior
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What broke, and what did you expect?
+      placeholder: Decoding DS2 stream fails after metadata sentinel...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction Steps
+      description: Provide exact commands and file snippets needed to reproduce.
+      placeholder: |
+        1. ds-codec decode samples/official.ds out.txt
+        2. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `ds-codec --version` or package version.
+      placeholder: 0.4.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Traceback
+      render: shell
+      description: Paste relevant stderr output or traceback.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI
+        - DS format
+        - Steganography
+        - Security / policy
+        - Tests / CI
+    validations:
+      required: true

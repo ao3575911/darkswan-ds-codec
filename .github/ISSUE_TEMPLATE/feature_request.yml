@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a scoped feature or enhancement
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What user problem should this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe API/CLI shape and expected behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional alternatives and tradeoffs.
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact area
+      options:
+        - DS format/API
+        - Stego pipeline
+        - CLI/UX
+        - Security controls
+        - Documentation
+    validations:
+      required: true

@@ -1,0 +1,19 @@
+name: Q&A
+description: Ask implementation or usage questions
+category: Q&A
+title: "[Q&A]: "
+labels: ["documentation"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Commands, files, or constraints relevant to your question.
