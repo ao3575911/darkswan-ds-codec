@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-DarkSwan .ds encoder/decoder.
+DarkSwan DS codec.
 
 Format overview:
-    - V1: MAGIC b"DARKSWAN-DS1\\n", whitespace records only (no metadata).
-    - V2: MAGIC b"DARKSWAN-DS2\\n", whitespace records followed by a metadata
-      trailer guarded by sentinels to detect corruption.
-    - Each source line is encoded independently as runs of spaces separated by tabs.
-      A byte becomes two runs (hi nibble, lo nibble). Each run length is the nibble value.
+- DS1: header + whitespace records.
+- DS2: header + whitespace records + metadata trailer.
+- Each input line maps to one encoded record.
 """
 from __future__ import annotations
 
@@ -16,17 +14,54 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, Iterator, List, Optional, Tuple
 
-BRAND = "DarkSwan(tm)"
+BRAND = "DarkSwan DS Codec"
 TOOL_VERSION = "0.3.0"
 MAGIC_V1 = b"DARKSWAN-DS1\n"
 MAGIC_V2 = b"DARKSWAN-DS2\n"
 META_BEGIN = b"##META\n"
 META_END = b"##ENDMETA\n"
 NIBBLE_MAX = 0x0F
+STEGO_MAGIC = b"DSSTEG1"
+STEGO_SEPARATOR = b"\t \t  \t"
+DEFAULT_STEGO_CHUNK_SIZE = 64
+MASCOT = r"""      ,-----.
+    ,-,-o-   `\
+__.--"`-,)       \
+`---------'-.._    \
+               `.   :
+                |   |
+                |   |
+                |   |
+                ,   ;
+               /    |"""
+
+Stats = Dict[str, int]
+Report = Dict[str, object]
+
+__all__ = [
+    "DecodeError",
+    "MAGIC_V1",
+    "MAGIC_V2",
+    "encode_bytes",
+    "decode_bytes",
+    "encode_stream",
+    "decode_stream",
+    "inspect_stream",
+    "inspect_file",
+    "decode_record",
+    "read_record",
+    "iter_records",
+    "count_records",
+    "estimate_capacity",
+    "embed_payload",
+    "extract_payload",
+    "cli_main",
+]
 
 
 class DecodeError(RuntimeError):
@@ -36,18 +71,32 @@ class DecodeError(RuntimeError):
 class _NullWriter:
     """Sink that discards writes, used for inspection without materializing data."""
 
-    def write(self, data: bytes) -> int:  # noqa: D401
+    def write(self, data: bytes) -> int:
         return len(data)
 
 
+def _init_stats() -> Stats:
+    return {
+        "source_bytes": 0,
+        "source_lines": 0,
+        "encoded_records": 0,
+        "sha256": "",
+    }
+
+
+def _finish_stats(stats: Stats, sha: "hashlib._Hash") -> Stats:
+    stats["sha256"] = sha.hexdigest()
+    return stats
+
+
 def _encode_record(line: bytes) -> bytes:
-    segments: List[bytes] = []
+    chunks: List[bytes] = []
     for byte in line:
         hi = byte >> 4
         lo = byte & NIBBLE_MAX
-        segments.append(b" " * hi + b"\t" + b" " * lo + b"\t")
-    segments.append(b"\n")
-    return b"".join(segments)
+        chunks.append((b" " * hi) + b"\t" + (b" " * lo) + b"\t")
+    chunks.append(b"\n")
+    return b"".join(chunks)
 
 
 def _decode_record(record: bytes) -> bytes:
@@ -71,7 +120,6 @@ def _decode_record(record: bytes) -> bytes:
 
         hi = len(hi_run)
         lo = len(lo_run)
-
         if hi > NIBBLE_MAX or lo > NIBBLE_MAX:
             raise DecodeError("Nibble length outside 0-15 range")
 
@@ -79,54 +127,195 @@ def _decode_record(record: bytes) -> bytes:
     return bytes(out)
 
 
+def decode_record(encoded_line: bytes) -> bytes:
+    """Decode a single encoded DS record line."""
+    return _decode_record(encoded_line.rstrip(b"\n"))
+
+
 def encode_bytes(data: bytes, *, magic: bytes = MAGIC_V2, include_metadata: bool = True) -> bytes:
     """Encode raw bytes into DS format."""
-    buffer = io.BytesIO(data)
-    out = io.BytesIO()
-    encode_stream(buffer, out, magic=magic, include_metadata=include_metadata)
-    return out.getvalue()
+    in_fp = io.BytesIO(data)
+    out_fp = io.BytesIO()
+    encode_stream(in_fp, out_fp, magic=magic, include_metadata=include_metadata)
+    return out_fp.getvalue()
 
 
 def decode_bytes(encoded: bytes) -> bytes:
     """Decode DS format back into raw bytes."""
-    buffer = io.BytesIO(encoded)
-    out = io.BytesIO()
-    decode_stream(buffer, out)
-    return out.getvalue()
+    in_fp = io.BytesIO(encoded)
+    out_fp = io.BytesIO()
+    decode_stream(in_fp, out_fp)
+    return out_fp.getvalue()
 
 
-def inspect_file(path: Path, *, verify: bool = True) -> Dict[str, object]:
+def _read_header(in_fp: BinaryIO) -> bytes:
+    header = in_fp.readline()
+    if header not in (MAGIC_V1, MAGIC_V2):
+        raise DecodeError("Missing DS magic header")
+    return header
+
+
+def read_record(in_fp: BinaryIO, n: int) -> bytes:
+    """Read and decode the nth DS data record from the current stream position."""
+    if n < 0:
+        raise ValueError("Record index must be non-negative")
+
+    header = _read_header(in_fp)
+    is_ds2 = header == MAGIC_V2
+
+    for idx, raw in enumerate(in_fp):
+        if is_ds2 and raw == META_BEGIN:
+            break
+        if idx == n:
+            return decode_record(raw)
+
+    raise IndexError("Record index out of range")
+
+
+def iter_records(in_fp: BinaryIO) -> Iterator[bytes]:
+    """Yield decoded DS records from the current stream position."""
+    header = _read_header(in_fp)
+    is_ds2 = header == MAGIC_V2
+    for raw in in_fp:
+        if is_ds2 and raw == META_BEGIN:
+            return
+        yield decode_record(raw)
+
+
+def count_records(in_fp: BinaryIO) -> int:
+    """Count decoded records in a DS stream from the current position."""
+    count = 0
+    for _ in iter_records(in_fp):
+        count += 1
+    return count
+
+
+def estimate_capacity(cover: bytes, *, chunk_size: int = DEFAULT_STEGO_CHUNK_SIZE) -> int:
+    """Estimate maximum payload bytes a carrier can hold for the given chunk size."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    line_count = len(cover.splitlines(keepends=True))
+    if line_count <= 1:
+        return 0
+    return (line_count - 1) * chunk_size
+
+
+def _split_line_ending(line: bytes) -> Tuple[bytes, bytes]:
+    if line.endswith(b"\r\n"):
+        return line[:-2], b"\r\n"
+    if line.endswith(b"\n"):
+        return line[:-1], b"\n"
+    if line.endswith(b"\r"):
+        return line[:-1], b"\r"
+    return line, b""
+
+
+def _build_stego_records(payload: bytes, *, chunk_size: int) -> List[bytes]:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+
+    checksum = hashlib.sha256(payload).hexdigest().encode("ascii")
+    header = STEGO_MAGIC + b":" + str(len(payload)).encode("ascii") + b":" + checksum
+    records = [header]
+    for idx in range(0, len(payload), chunk_size):
+        records.append(payload[idx : idx + chunk_size])
+    return records
+
+
+def embed_payload(cover: bytes, payload: bytes, *, chunk_size: int = DEFAULT_STEGO_CHUNK_SIZE) -> bytes:
+    """Embed a payload into a text carrier using trailing-whitespace records."""
+    records = _build_stego_records(payload, chunk_size=chunk_size)
+    lines = cover.splitlines(keepends=True)
+    if len(lines) < len(records):
+        raise ValueError("Carrier does not have enough lines for payload")
+
+    for idx, record in enumerate(records):
+        body, ending = _split_line_ending(lines[idx])
+        encoded = _encode_record(record).rstrip(b"\n")
+        lines[idx] = body + STEGO_SEPARATOR + encoded + ending
+
+    return b"".join(lines)
+
+
+def _parse_stego_header(header: bytes) -> Tuple[int, str]:
+    if not header.startswith(STEGO_MAGIC + b":"):
+        raise DecodeError("Hidden payload header missing")
+
+    parts = header.split(b":", 2)
+    if len(parts) != 3:
+        raise DecodeError("Hidden payload header malformed")
+
+    _, length_bytes, checksum_bytes = parts
+    try:
+        payload_len = int(length_bytes.decode("ascii"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise DecodeError("Hidden payload length is invalid") from exc
+
+    try:
+        checksum = checksum_bytes.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise DecodeError("Hidden payload checksum is invalid") from exc
+
+    if payload_len < 0:
+        raise DecodeError("Hidden payload length is invalid")
+    return payload_len, checksum
+
+
+def extract_payload(stego: bytes) -> bytes:
+    """Extract an embedded payload from a text carrier."""
+    decoded_records: List[bytes] = []
+    for line in stego.splitlines(keepends=True):
+        body, _ = _split_line_ending(line)
+        marker_idx = body.rfind(STEGO_SEPARATOR)
+        if marker_idx < 0:
+            continue
+        encoded = body[marker_idx + len(STEGO_SEPARATOR) :]
+        if not encoded:
+            raise DecodeError("Malformed hidden record")
+        decoded_records.append(decode_record(encoded))
+
+    if not decoded_records:
+        raise DecodeError("No hidden payload found")
+
+    payload_len, expected_checksum = _parse_stego_header(decoded_records[0])
+    payload = b"".join(decoded_records[1:])
+    if len(payload) != payload_len:
+        raise DecodeError("Hidden payload length mismatch")
+    if hashlib.sha256(payload).hexdigest() != expected_checksum:
+        raise DecodeError("Hidden payload checksum mismatch")
+    return payload
+
+
+def inspect_file(path: Path, *, verify: bool = True) -> Report:
     """Inspect a DS file without writing output, returning stats and metadata."""
     with path.open("rb") as in_fp:
         return inspect_stream(in_fp, verify=verify)
 
 
 def encode_stream(
-    in_fp: BinaryIO, out_fp: BinaryIO, *, magic: bytes = MAGIC_V2, include_metadata: bool = True
-) -> Dict[str, int]:
+    in_fp: BinaryIO,
+    out_fp: BinaryIO,
+    *,
+    magic: bytes = MAGIC_V2,
+    include_metadata: bool = True,
+) -> Stats:
     """Stream encoder from a binary file-like input to output."""
     if magic not in (MAGIC_V1, MAGIC_V2):
         raise ValueError("Unsupported magic header")
 
     out_fp.write(magic)
+
     sha = hashlib.sha256()
-    source_bytes = 0
-    source_lines = 0
-    encoded_records = 0
+    stats = _init_stats()
 
     for line in iter(lambda: in_fp.readline(), b""):
-        source_bytes += len(line)
-        source_lines += 1
+        stats["source_bytes"] += len(line)
+        stats["source_lines"] += 1
+        stats["encoded_records"] += 1
         sha.update(line)
         out_fp.write(_encode_record(line))
-        encoded_records += 1
 
-    stats = {
-        "source_bytes": source_bytes,
-        "source_lines": source_lines,
-        "encoded_records": encoded_records,
-        "sha256": sha.hexdigest(),
-    }
+    _finish_stats(stats, sha)
 
     if magic == MAGIC_V2 and include_metadata:
         out_fp.write(META_BEGIN)
@@ -135,9 +324,9 @@ def encode_stream(
             ("brand", BRAND),
             ("tool", f"ds-codec/{TOOL_VERSION}"),
             ("hash", f"sha256:{stats['sha256']}"),
-            ("source-bytes", str(source_bytes)),
-            ("source-lines", str(source_lines)),
-            ("encoded-records", str(encoded_records)),
+            ("source-bytes", str(stats["source_bytes"])),
+            ("source-lines", str(stats["source_lines"])),
+            ("encoded-records", str(stats["encoded_records"])),
         ]
         for key, value in metadata_lines:
             out_fp.write(f"{key}: {value}\n".encode("ascii"))
@@ -149,7 +338,7 @@ def encode_stream(
 def _parse_metadata_line(line: bytes) -> Tuple[str, str]:
     try:
         key, value = line.decode("ascii").rstrip("\n").split(":", 1)
-    except ValueError as exc:
+    except (UnicodeDecodeError, ValueError) as exc:
         raise DecodeError("Malformed metadata line") from exc
     return key.strip(), value.strip()
 
@@ -164,7 +353,7 @@ def _read_metadata(in_fp: BinaryIO) -> Dict[str, str]:
     raise DecodeError("Reached EOF while reading metadata")
 
 
-def _validate_metadata(metadata: Dict[str, str], stats: Dict[str, int]) -> None:
+def _validate_metadata(metadata: Dict[str, str], stats: Stats) -> None:
     if metadata.get("format-version") != "2":
         raise DecodeError("Unsupported metadata format")
 
@@ -188,88 +377,69 @@ def _validate_metadata(metadata: Dict[str, str], stats: Dict[str, int]) -> None:
 
 
 def _ensure_no_trailing_data(in_fp: BinaryIO) -> None:
-    """Raise if any bytes remain after the metadata trailer."""
-    leftover = in_fp.read(1)
-    if leftover:
+    if in_fp.read(1):
         raise DecodeError("Trailing data detected after metadata trailer")
 
 
-def _decode_v1(in_fp: BinaryIO, out_fp: BinaryIO) -> Dict[str, object]:
+def _decode_v1(in_fp: BinaryIO, out_fp: BinaryIO) -> Report:
     sha = hashlib.sha256()
-    source_bytes = 0
-    source_lines = 0
-    encoded_records = 0
+    stats = _init_stats()
+
     for raw in in_fp:
-        record = raw.rstrip(b"\n")
-        decoded = _decode_record(record)
+        decoded = _decode_record(raw.rstrip(b"\n"))
         out_fp.write(decoded)
         sha.update(decoded)
-        source_bytes += len(decoded)
-        source_lines += 1
-        encoded_records += 1
+        stats["source_bytes"] += len(decoded)
+        stats["source_lines"] += 1
+        stats["encoded_records"] += 1
 
-    stats = {
-        "source_bytes": source_bytes,
-        "source_lines": source_lines,
-        "encoded_records": encoded_records,
-        "sha256": sha.hexdigest(),
-    }
+    _finish_stats(stats, sha)
     return {"format": "ds1", "verified": False, "metadata": None, "stats": stats}
 
 
-def _decode_v2(in_fp: BinaryIO, out_fp: BinaryIO, *, verify: bool = True) -> Dict[str, object]:
+def _decode_v2(in_fp: BinaryIO, out_fp: BinaryIO, *, verify: bool) -> Report:
     sha = hashlib.sha256()
-    source_bytes = 0
-    source_lines = 0
-    encoded_records = 0
+    stats = _init_stats()
+
     for raw in in_fp:
         if raw == META_BEGIN:
             metadata = _read_metadata(in_fp)
-            stats = {
-                "source_bytes": source_bytes,
-                "source_lines": source_lines,
-                "encoded_records": encoded_records,
-                "sha256": sha.hexdigest(),
-            }
+            _finish_stats(stats, sha)
             if verify:
                 _validate_metadata(metadata, stats)
             _ensure_no_trailing_data(in_fp)
             return {"format": "ds2", "verified": verify, "metadata": metadata, "stats": stats}
 
-        record = raw.rstrip(b"\n")
-        decoded = _decode_record(record)
+        decoded = _decode_record(raw.rstrip(b"\n"))
         out_fp.write(decoded)
         sha.update(decoded)
-        source_bytes += len(decoded)
-        source_lines += 1
-        encoded_records += 1
+        stats["source_bytes"] += len(decoded)
+        stats["source_lines"] += 1
+        stats["encoded_records"] += 1
 
     raise DecodeError("Missing metadata block")
 
 
-def decode_stream(in_fp: BinaryIO, out_fp: BinaryIO, *, verify: bool = True) -> Dict[str, object]:
+def decode_stream(in_fp: BinaryIO, out_fp: BinaryIO, *, verify: bool = True) -> Report:
     """Stream decoder from a binary file-like input to output."""
-    header = in_fp.readline()
+    header = _read_header(in_fp)
     if header == MAGIC_V1:
         return _decode_v1(in_fp, out_fp)
-    if header == MAGIC_V2:
-        return _decode_v2(in_fp, out_fp, verify=verify)
-    raise DecodeError("Missing DS magic header")
+    return _decode_v2(in_fp, out_fp, verify=verify)
 
 
-def inspect_stream(in_fp: BinaryIO, *, verify: bool = True) -> Dict[str, object]:
+def inspect_stream(in_fp: BinaryIO, *, verify: bool = True) -> Report:
     """Inspect a DS stream without materializing output, returning stats/metadata."""
-    header = in_fp.readline()
+    header = _read_header(in_fp)
+    sink = _NullWriter()
     if header == MAGIC_V1:
-        return _decode_v1(in_fp, _NullWriter())
-    if header == MAGIC_V2:
-        return _decode_v2(in_fp, _NullWriter(), verify=verify)
-    raise DecodeError("Missing DS magic header")
+        return _decode_v1(in_fp, sink)
+    return _decode_v2(in_fp, sink, verify=verify)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=f"{BRAND} .ds encoder/decoder",
+        description=f"{BRAND} encoder/decoder",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -306,50 +476,120 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit inspection report as JSON (respects --no-metadata)",
     )
 
+    hide = subparsers.add_parser("hide", help="Embed secret bytes into a text carrier")
+    hide.add_argument("cover", type=str, help="Carrier text path or '-' for stdin")
+    hide.add_argument("secret", type=str, help="Secret input path")
+    hide.add_argument("output", type=str, help="Stego output path or '-' for stdout")
+    hide.add_argument(
+        "--chunk-size",
+        type=int,
+        default=DEFAULT_STEGO_CHUNK_SIZE,
+        help="Secret bytes per hidden record line",
+    )
+
+    reveal = subparsers.add_parser("reveal", help="Extract hidden secret bytes from a stego text")
+    reveal.add_argument("input", type=str, help="Stego input path or '-' for stdin")
+    reveal.add_argument("output", type=str, help="Recovered secret output path or '-' for stdout")
+
+    capacity = subparsers.add_parser("capacity", help="Estimate stego capacity of a text carrier")
+    capacity.add_argument("cover", type=str, help="Carrier text path or '-' for stdin")
+    capacity.add_argument(
+        "--secret",
+        type=str,
+        default=None,
+        help="Optional secret path for preflight fit check",
+    )
+    capacity.add_argument(
+        "--chunk-size",
+        type=int,
+        default=DEFAULT_STEGO_CHUNK_SIZE,
+        help="Secret bytes per hidden record line",
+    )
+    capacity.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit capacity report as JSON",
+    )
+
     return parser
 
 
+def _supports_color(stream: Any) -> bool:
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    term = os.environ.get("TERM", "")
+    if term.lower() == "dumb":
+        return False
+    isatty = getattr(stream, "isatty", None)
+    return bool(callable(isatty) and isatty())
+
+
+def _paint(text: str, code: str, *, stream: Any) -> str:
+    if not _supports_color(stream):
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _print_mascot(stream: Any = sys.stdout) -> None:
+    print(_paint(MASCOT, "36", stream=stream), file=stream)
+
+
+def _print_section(title: str, rows: List[Tuple[str, str]], *, stream: Any = sys.stdout) -> None:
+    title_text = _paint(f"[ {title} ]", "1;35", stream=stream)
+    print(title_text, file=stream)
+    key_color = "1;34"
+    for key, value in rows:
+        key_text = _paint(f"{key:<18}", key_color, stream=stream)
+        print(f"{key_text} {value}", file=stream)
+
+
 def _print_summary(
-    action: str, stats: Dict[str, int], *, format_label: str, verified: Optional[bool], stream: Any = sys.stdout
+    action: str,
+    stats: Stats,
+    *,
+    format_label: str,
+    verified: Optional[bool],
+    stream: Any = sys.stdout,
 ) -> None:
-    lines = [
-        f"{BRAND} :: {action}",
-        f"  format: {format_label}",
+    _print_mascot(stream)
+    rows = [
+        ("brand", BRAND),
+        ("action", action),
+        ("format", format_label),
     ]
     if verified is not None:
-        if format_label == "ds1":
-            lines.append("  verified: n/a (ds1)")
-        else:
-            lines.append(f"  verified: {'yes' if verified else 'no'}")
-    lines.extend(
+        rows.append(("verified", "n/a (ds1)" if format_label == "ds1" else ("yes" if verified else "no")))
+    rows.extend(
         [
-            f"  source-bytes: {stats['source_bytes']}",
-            f"  source-lines: {stats['source_lines']}",
-            f"  encoded-records: {stats['encoded_records']}",
-            f"  sha256: {stats['sha256']}",
+            ("source-bytes", str(stats["source_bytes"])),
+            ("source-lines", str(stats["source_lines"])),
+            ("encoded-records", str(stats["encoded_records"])),
+            ("sha256", str(stats["sha256"])),
         ]
     )
-    print("\n".join(lines), file=stream)
+    _print_section("Summary", rows, stream=stream)
 
 
-def _print_inspection(report: Dict[str, object], *, show_metadata: bool, stream: Any = sys.stdout) -> None:
-    stats: Dict[str, int] = report["stats"]  # type: ignore[assignment]
+def _print_inspection(report: Report, *, show_metadata: bool, stream: Any = sys.stdout) -> None:
+    stats: Stats = report["stats"]  # type: ignore[assignment]
     metadata: Optional[Dict[str, str]] = report.get("metadata")  # type: ignore[assignment]
+
     _print_summary(
         "inspect",
         stats,
-        format_label=report["format"],
+        format_label=report["format"],  # type: ignore[arg-type]
         verified=report.get("verified"),  # type: ignore[arg-type]
         stream=stream,
     )
     if show_metadata and metadata:
-        print("  metadata:", file=stream)
-        for key, value in metadata.items():
-            print(f"    {key}: {value}", file=stream)
+        metadata_rows = [(key, value) for key, value in metadata.items()]
+        _print_section("Metadata", metadata_rows, stream=stream)
 
 
 def _fail(message: str, exit_code: int = 1) -> None:
-    print(f"{BRAND} error: {message}", file=sys.stderr)
+    _print_mascot(sys.stderr)
+    prefix = _paint(f"{BRAND} error:", "1;31", stream=sys.stderr)
+    print(f"{prefix} {message}", file=sys.stderr)
     raise SystemExit(exit_code)
 
 
@@ -364,18 +604,18 @@ def _guard_distinct_paths(input_path: str, output_path: str) -> None:
 def _open_binary_input(path: str) -> Iterator[BinaryIO]:
     if path == "-":
         yield sys.stdin.buffer
-    else:
-        with Path(path).open("rb") as fp:
-            yield fp
+        return
+    with Path(path).open("rb") as fp:
+        yield fp
 
 
 @contextlib.contextmanager
 def _open_binary_output(path: str) -> Iterator[BinaryIO]:
     if path == "-":
         yield sys.stdout.buffer
-    else:
-        with Path(path).open("wb") as fp:
-            yield fp
+        return
+    with Path(path).open("wb") as fp:
+        yield fp
 
 
 def cli_main() -> None:
@@ -392,7 +632,9 @@ def cli_main() -> None:
                 out_fp = stack.enter_context(_open_binary_output(args.output))
                 stats = encode_stream(in_fp, out_fp, magic=magic, include_metadata=True)
             _print_summary("encoded", stats, format_label=args.format, verified=magic == MAGIC_V2, stream=summary_stream)
-        elif args.command == "decode":
+            return
+
+        if args.command == "decode":
             _guard_distinct_paths(args.input, args.output)
             summary_stream = sys.stderr if args.output == "-" else sys.stdout
             with contextlib.ExitStack() as stack:
@@ -400,12 +642,19 @@ def cli_main() -> None:
                 out_fp = stack.enter_context(_open_binary_output(args.output))
                 info = decode_stream(in_fp, out_fp, verify=True)
             _print_summary(  # type: ignore[arg-type]
-                "decoded", info["stats"], format_label=info["format"], verified=info.get("verified"), stream=summary_stream
+                "decoded",
+                info["stats"],
+                format_label=info["format"],
+                verified=info.get("verified"),
+                stream=summary_stream,
             )
-        elif args.command == "inspect":
+            return
+
+        if args.command == "inspect":
             with contextlib.ExitStack() as stack:
                 in_fp = stack.enter_context(_open_binary_input(args.input))
                 report = inspect_stream(in_fp, verify=not args.no_verify)
+
             if args.json:
                 payload = dict(report)
                 if args.no_metadata:
@@ -413,8 +662,110 @@ def cli_main() -> None:
                 print(json.dumps(payload), file=sys.stdout)
             else:
                 _print_inspection(report, show_metadata=not args.no_metadata)
-        else:
-            parser.print_help()
+            return
+
+        if args.command == "hide":
+            _guard_distinct_paths(args.cover, args.output)
+            _guard_distinct_paths(args.secret, args.output)
+            summary_stream = sys.stderr if args.output == "-" else sys.stdout
+            with contextlib.ExitStack() as stack:
+                cover_fp = stack.enter_context(_open_binary_input(args.cover))
+                secret_fp = stack.enter_context(_open_binary_input(args.secret))
+                out_fp = stack.enter_context(_open_binary_output(args.output))
+                cover = cover_fp.read()
+                secret = secret_fp.read()
+                stego = embed_payload(cover, secret, chunk_size=args.chunk_size)
+                out_fp.write(stego)
+            _print_mascot(summary_stream)
+            _print_section(
+                "Stego Hide",
+                [
+                    ("brand", BRAND),
+                    ("action", "hidden payload"),
+                    ("cover-bytes", str(len(cover))),
+                    ("secret-bytes", str(len(secret))),
+                    ("chunk-size", str(args.chunk_size)),
+                ],
+                stream=summary_stream,
+            )
+            return
+
+        if args.command == "reveal":
+            _guard_distinct_paths(args.input, args.output)
+            summary_stream = sys.stderr if args.output == "-" else sys.stdout
+            with contextlib.ExitStack() as stack:
+                in_fp = stack.enter_context(_open_binary_input(args.input))
+                out_fp = stack.enter_context(_open_binary_output(args.output))
+                secret = extract_payload(in_fp.read())
+                out_fp.write(secret)
+            _print_mascot(summary_stream)
+            _print_section(
+                "Stego Reveal",
+                [
+                    ("brand", BRAND),
+                    ("action", "revealed payload"),
+                    ("secret-bytes", str(len(secret))),
+                ],
+                stream=summary_stream,
+            )
+            return
+
+        if args.command == "capacity":
+            if args.cover == "-" and args.secret == "-":
+                _fail("cover and secret cannot both be '-'")
+
+            with contextlib.ExitStack() as stack:
+                cover_fp = stack.enter_context(_open_binary_input(args.cover))
+                cover = cover_fp.read()
+                max_payload_bytes = estimate_capacity(cover, chunk_size=args.chunk_size)
+                line_count = len(cover.splitlines(keepends=True))
+
+                payload_bytes: Optional[int] = None
+                fits: Optional[bool] = None
+                needed_lines: Optional[int] = None
+                available_payload_lines = max(0, line_count - 1)
+
+                if args.secret is not None:
+                    secret_fp = stack.enter_context(_open_binary_input(args.secret))
+                    payload_bytes = len(secret_fp.read())
+                    fits = payload_bytes <= max_payload_bytes
+                    needed_lines = 1 + ((payload_bytes + args.chunk_size - 1) // args.chunk_size)
+
+            report: Dict[str, object] = {
+                "chunk_size": args.chunk_size,
+                "carrier_lines": line_count,
+                "available_payload_lines": available_payload_lines,
+                "max_payload_bytes": max_payload_bytes,
+                "payload_bytes": payload_bytes,
+                "fits": fits,
+                "needed_lines": needed_lines,
+            }
+
+            if args.json:
+                print(json.dumps(report), file=sys.stdout)
+            else:
+                _print_mascot(sys.stdout)
+                rows = [
+                    ("brand", BRAND),
+                    ("action", "capacity"),
+                    ("chunk-size", str(report["chunk_size"])),
+                    ("carrier-lines", str(report["carrier_lines"])),
+                    ("payload-lines", str(report["available_payload_lines"])),
+                    ("max-payload-bytes", str(report["max_payload_bytes"])),
+                ]
+                if payload_bytes is not None:
+                    fit_text = "yes" if fits else "no"
+                    rows.extend(
+                        [
+                            ("secret-bytes", str(payload_bytes)),
+                            ("needed-lines", str(needed_lines)),
+                            ("fits", fit_text),
+                        ]
+                    )
+                _print_section("Stego Capacity", rows, stream=sys.stdout)
+            return
+
+        parser.print_help()
     except DecodeError as exc:
         _fail(f"Decode error: {exc}")
     except FileNotFoundError as exc:

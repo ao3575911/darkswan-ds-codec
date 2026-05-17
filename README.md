@@ -8,6 +8,9 @@
 - Encode: `ds-codec encode plain.txt archive.ds`
 - Decode: `ds-codec decode archive.ds restored.txt`
 - Inspect/verify: `ds-codec inspect archive.ds` or `ds-codec inspect --json archive.ds`
+- Hide payload in text carrier: `ds-codec hide cover.txt secret.bin stego.txt`
+- Reveal payload from stego text: `ds-codec reveal stego.txt recovered.bin`
+- Preflight capacity: `ds-codec capacity cover.txt --secret secret.bin --json`
 - Stream: use `-` for stdin/stdout on encode/decode (e.g., `cat plain.txt | ds-codec encode - - > archive.ds`).
 - Legacy: `ds-codec encode --format ds1 plain.txt legacy.ds` for header-only output without metadata.
 
@@ -19,7 +22,7 @@
   ```
   ##META
   format-version: 2
-  brand: DarkSwan(tm)
+  brand: DarkSwan DS Codec
   tool: ds-codec/<version>
   hash: sha256:<digest>      # checksum of the original raw bytes
   source-bytes: <int>        # total input bytes seen by encoder
@@ -103,6 +106,13 @@ Tips:
 
 - `encode_bytes(raw: bytes, magic=MAGIC_V2, include_metadata=True) -> bytes`: encode a blob, returning the full DS payload.
 - `decode_bytes(encoded: bytes) -> bytes`: decode a DS payload, verifying DS2 metadata and checksum.
+- `decode_record(encoded_line: bytes) -> bytes`: decode one encoded DS record line, with or without trailing `\n`.
+- `read_record(in_fp, n: int) -> bytes`: consume a DS header, then decode the `n`th record (0-based) from the current stream position.
+- `iter_records(in_fp) -> Iterator[bytes]`: iterate decoded records from a DS stream from current position.
+- `count_records(in_fp) -> int`: count DS records from current position without materializing full decoded payload.
+- `estimate_capacity(cover: bytes, chunk_size=64) -> int`: estimate max payload bytes for a given carrier and chunk size.
+- `embed_payload(cover: bytes, payload: bytes, chunk_size=64) -> bytes`: hide payload bytes in carrier text line endings.
+- `extract_payload(stego: bytes) -> bytes`: recover hidden payload bytes and verify embedded checksum.
 - `encode_stream(input_fp, output_fp, magic=MAGIC_V2, include_metadata=True) -> dict`: stream line by line, write the header/records/trailer, and return stats.
 - `decode_stream(input_fp, output_fp, verify=True) -> dict`: stream decode, returning `{format, verified, metadata, stats}`; raises `DecodeError` on corruption.
 - `inspect_file(path, verify=True) -> dict`: inspect/verify without materializing output (uses a null sink).
